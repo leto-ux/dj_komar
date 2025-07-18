@@ -1,0 +1,10 @@
+services:
+  dj_komar:
+    build:
+      context: .
+      dockerfile: chef.Dockerfile
+    container_name: rust_serial_reader
+    devices:
+      - "/dev/ttyUSB0:/dev/ttyUSB0"
+    environment:
+      - RUST_LOG=info
