@@ -3,7 +3,11 @@ const int analogIndex[POT_COUNT] = {A0, A1, A2, A3, A4, A5};
 
 int analogIndexValue[POT_COUNT];
 int lastAnalogValue[POT_COUNT];
+
 const int threshold = 10;
+
+unsigned long lastHeartbeat = 0;
+const unsigned long heartbeatInterval = 5000;  // 5 seconds
 
 void setup() {
   Serial.begin(9600);
@@ -23,5 +27,11 @@ void loop() {
       lastAnalogValue[i] = analogIndexValue[i];
     }
   }
+
+  if (millis() - lastHeartbeat >= heartbeatInterval) {
+    Serial.println("heartbeat");
+    lastHeartbeat = millis();
+  }
+
   delay(30);
 }
