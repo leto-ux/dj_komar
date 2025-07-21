@@ -1,5 +1,5 @@
 const int POT_COUNT = 6;
-const int analogIndex[POT_COUNT] = {A0, A1, A2, A3, A4, A5};
+const int analogIndex[POT_COUNT] = {A0, A1, A2, A3, A9, A8};
 
 int analogIndexValue[POT_COUNT];
 int lastAnalogValue[POT_COUNT];
@@ -7,7 +7,7 @@ int lastAnalogValue[POT_COUNT];
 const int threshold = 10;
 
 unsigned long lastHeartbeat = 0;
-const unsigned long heartbeatInterval = 5000;  // 5 seconds
+const unsigned long heartbeatInterval = 60000;  // 5 seconds
 
 void setup() {
   Serial.begin(9600);
