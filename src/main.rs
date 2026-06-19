@@ -15,7 +15,6 @@ enum ParseError {
     InvalidPotId,
     InvalidSinkId,
     InvalidValue,
-    Heartbeat,
 }
 
 impl Error for ParseError {}
@@ -31,17 +30,26 @@ struct Pot {
     value: u16,
 }
 
+enum Message {
+    Pot(Pot),
+    Mute(bool), // true = muted
+    Heartbeat,
+}
+
 fn volume_parse(line_ref: &str) -> Option<&str> {
     let re = Regex::new(r"^A\d_(\d+)$").ok()?;
     re.captures(line_ref)
         .and_then(|cap| cap.get(1).map(|m| m.as_str()))
 }
 
-fn pot_parse(line: &str) -> Result<Pot, ParseError> {
+fn parse_line(line: &str) -> Result<Message, ParseError> {
     let trimmed = line.trim();
 
-    if trimmed == "heartbeat" {
-        return Err(ParseError::Heartbeat);
+    match trimmed {
+        "heartbeat" => return Ok(Message::Heartbeat),
+        "MUTE_ON" => return Ok(Message::Mute(true)),
+        "MUTE_OFF" => return Ok(Message::Mute(false)),
+        _ => {}
     }
 
     let id_char = line.chars().nth(1).ok_or(ParseError::InvalidPotId)?;
@@ -53,7 +61,7 @@ fn pot_parse(line: &str) -> Result<Pot, ParseError> {
         .parse::<u16>()
         .map_err(|_| ParseError::InvalidValue)?;
 
-    Ok(Pot { id, value })
+    Ok(Message::Pot(Pot { id, value }))
 }
 
 fn sink_name_to_id(sink_name: [&str; SINK_COUNT]) -> Result<[usize; SINK_COUNT], ParseError> {
@@ -109,8 +117,8 @@ fn main() {
         let mut line = String::new();
 
         match reader.read_line(&mut line) {
-            Ok(_) => match pot_parse(&line) {
-                Ok(pot) => {
+            Ok(_) => match parse_line(&line) {
+                Ok(Message::Pot(pot)) => {
                     let mut volume = ((pot.value as f32 / 1023.0) * 100.0).round() / 100.0;
 
                     if REVERSE_POT {
@@ -155,6 +163,30 @@ fn main() {
                         );
                     }
                 }
+
+                Ok(Message::Mute(is_muted)) => {
+                    let master_sink_id = sink_id[0];
+                    let mute_flag = if is_muted { "1" } else { "0" };
+
+                    println!("{}", if is_muted { "mute on" } else { "mute off" });
+
+                    let output = Command::new("sh")
+                        .arg("-c")
+                        .arg(format!("wpctl set-mute {} {}", master_sink_id, mute_flag))
+                        .output()
+                        .expect("Failed to set mute");
+
+                    // prints stderr if it has anything in it
+                    if !output.stderr.is_empty() {
+                        eprintln!(
+                            "wpctl mute rror for sink {}: {}",
+                            master_sink_id,
+                            String::from_utf8_lossy(&output.stderr).trim()
+                        );
+                    }
+                }
+
+                Ok(Message::Heartbeat) => {}
 
                 Err(e) => eprintln!("Failed to parse: {}", e),
             },
