@@ -149,7 +149,6 @@ fn main() {
                             );
                         }
                     } else {
-                        // This case handles a pot ID that isn't in our `analog_port_name` array.
                         eprintln!(
                             "Warning: Received ID {} which is not configured in analog_port_name.",
                             pot.id
