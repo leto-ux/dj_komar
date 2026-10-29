@@ -1,0 +1,13 @@
+[Unit]
+Description=Pipewire volume mixer
+Documentation=https://github.com/leto-ux/dj_komar
+
+[Service]
+Type=simple
+ExecStart=%h/git/dj_komar/target/release/dj_komar
+Environment=RUST_LOG=info
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

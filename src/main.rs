@@ -1,13 +1,27 @@
 use regex::Regex;
+use serde::Deserialize;
+use std::env;
 use std::error::Error;
 use std::fmt;
-use std::io::{BufRead, BufReader};
+use std::fs;
+use std::io::{BufRead, BufReader, Write};
+use std::path::PathBuf;
 use std::process::Command;
 use std::thread;
 use std::time::Duration;
 
-const SINK_COUNT: usize = 6;
 const REVERSE_POT: bool = true;
+
+#[derive(Deserialize)]
+struct Config {
+    sinks: Vec<SinkConfig>,
+}
+
+#[derive(Deserialize)]
+struct SinkConfig {
+    name: String,
+    pin: usize,
+}
 
 #[derive(Debug)]
 enum ParseError {
@@ -36,12 +50,6 @@ enum Message {
     Heartbeat,
 }
 
-fn volume_parse(line_ref: &str) -> Option<&str> {
-    let re = Regex::new(r"^A\d_(\d+)$").ok()?;
-    re.captures(line_ref)
-        .and_then(|cap| cap.get(1).map(|m| m.as_str()))
-}
-
 fn parse_line(line: &str) -> Result<Message, ParseError> {
     let trimmed = line.trim();
 
@@ -52,66 +60,101 @@ fn parse_line(line: &str) -> Result<Message, ParseError> {
         _ => {}
     }
 
-    let id_char = line.chars().nth(1).ok_or(ParseError::InvalidPotId)?;
-    let id = id_char.to_digit(10).ok_or(ParseError::InvalidPotId)?;
+    let re = Regex::new(r"^A(\d+)_(\d+)$").map_err(|_| ParseError::InvalidFormat)?;
+    let caps = re.captures(trimmed).ok_or(ParseError::InvalidFormat)?;
 
-    let value_str = volume_parse(line.trim()).ok_or(ParseError::InvalidFormat)?;
-    let value = value_str
-        .trim()
+    let id = caps
+        .get(1)
+        .ok_or(ParseError::InvalidPotId)?
+        .as_str()
+        .parse::<u32>()
+        .map_err(|_| ParseError::InvalidPotId)?;
+
+    let value = caps
+        .get(2)
+        .ok_or(ParseError::InvalidValue)?
+        .as_str()
         .parse::<u16>()
         .map_err(|_| ParseError::InvalidValue)?;
 
     Ok(Message::Pot(Pot { id, value }))
 }
 
-fn sink_name_to_id(sink_name: [&str; SINK_COUNT]) -> Result<[usize; SINK_COUNT], ParseError> {
-    let mut sink_id = [0usize; SINK_COUNT];
+fn load_config() -> Config {
+    let config_path = env::args()
+        .nth(1)
+        .map(PathBuf::from)
+        .or_else(|| {
+            let local = PathBuf::from("config.toml");
+            if local.exists() {
+                Some(local)
+            } else {
+                Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("config.toml"))
+            }
+        })
+        .expect("Failed to determine config path");
 
-    for i in 0..SINK_COUNT {
+    let content = fs::read_to_string(&config_path)
+        .unwrap_or_else(|e| panic!("Failed to read config file {:?}: {}", config_path, e));
+
+    toml::from_str(&content)
+        .unwrap_or_else(|e| panic!("Failed to parse config file {:?}: {}", config_path, e))
+}
+
+fn sink_name_to_id(sinks: &[SinkConfig]) -> Result<Vec<usize>, ParseError> {
+    let mut sink_ids = Vec::with_capacity(sinks.len());
+
+    for sink in sinks {
         let output = Command::new("sh")
             .arg("-c")
             .arg(format!(
                 "pw-dump | jq '.[] | select(.info.props.\"node.name\" == \"{}\") | .id'",
-                sink_name[i]
+                sink.name
             ))
             .output()
             .expect("pw-dump failure"); // unrecoverable as ids are needed
 
-        sink_id[i] = String::from_utf8_lossy(&output.stdout)
+        let id = String::from_utf8_lossy(&output.stdout)
             .trim()
             .parse::<usize>()
             .map_err(|_| ParseError::InvalidSinkId)?;
+
+        sink_ids.push(id);
     }
-    Ok(sink_id)
+    Ok(sink_ids)
 }
 
 fn main() {
-    let sink_name: [&str; SINK_COUNT] = [
-        "1. Master",
-        "2. Browser",
-        "3. Music",
-        "4. Comms",
-        "5. Games",
-        "6. Others",
-    ];
+    let config = load_config();
+    let analog_port_name: Vec<usize> = config.sinks.iter().map(|s| s.pin).collect();
 
-    let analog_port_name: [usize; SINK_COUNT] = [0, 1, 2, 3, 9, 8];
-
-    let sink_id = sink_name_to_id(sink_name).expect("failed to get ids at startup");
+    let sink_id = sink_name_to_id(&config.sinks).expect("failed to get ids at startup");
     println!("{:?}", sink_id);
 
     let port_name = "/dev/ttyACM0";
     let baud_rate = 9600;
 
     // just gonna panic for now, no need to do error handling yet
-    let port = serialport::new(port_name, baud_rate)
+    let mut port = serialport::new(port_name, baud_rate)
         .timeout(Duration::from_millis(120000))
         .open()
         .expect("Failed to open port");
 
-    let mut reader = BufReader::new(port);
-
     thread::sleep(Duration::from_millis(3000));
+
+    let pins_cmd = format!(
+        "PINS:{}\n",
+        analog_port_name
+            .iter()
+            .map(|p| p.to_string())
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    port.write_all(pins_cmd.as_bytes())
+        .expect("Failed to send pin configuration to Arduino");
+    port.flush().expect("Failed to flush serial port");
+
+    let mut reader = BufReader::new(port);
 
     loop {
         let mut line = String::new();
@@ -165,24 +208,25 @@ fn main() {
                 }
 
                 Ok(Message::Mute(is_muted)) => {
-                    let master_sink_id = sink_id[0];
-                    let mute_flag = if is_muted { "1" } else { "0" };
+                    if let Some(&master_sink_id) = sink_id.first() {
+                        let mute_flag = if is_muted { "1" } else { "0" };
 
-                    println!("{}", if is_muted { "mute on" } else { "mute off" });
+                        println!("{}", if is_muted { "mute on" } else { "mute off" });
 
-                    let output = Command::new("sh")
-                        .arg("-c")
-                        .arg(format!("wpctl set-mute {} {}", master_sink_id, mute_flag))
-                        .output()
-                        .expect("Failed to set mute");
+                        let output = Command::new("sh")
+                            .arg("-c")
+                            .arg(format!("wpctl set-mute {} {}", master_sink_id, mute_flag))
+                            .output()
+                            .expect("Failed to set mute");
 
-                    // prints stderr if it has anything in it
-                    if !output.stderr.is_empty() {
-                        eprintln!(
-                            "wpctl mute rror for sink {}: {}",
-                            master_sink_id,
-                            String::from_utf8_lossy(&output.stderr).trim()
-                        );
+                        // prints stderr if it has anything in it
+                        if !output.stderr.is_empty() {
+                            eprintln!(
+                                "wpctl mute rror for sink {}: {}",
+                                master_sink_id,
+                                String::from_utf8_lossy(&output.stderr).trim()
+                            );
+                        }
                     }
                 }
 

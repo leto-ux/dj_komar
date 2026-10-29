@@ -1,0 +1,23 @@
+[[sinks]]
+name = "Master"
+pin = 0
+
+[[sinks]]
+name = "Browser"
+pin = 1
+
+[[sinks]]
+name = "Music"
+pin = 2
+
+[[sinks]]
+name = "Comms"
+pin = 3
+
+[[sinks]]
+name = "Games"
+pin = 9
+
+[[sinks]]
+name = "Others"
+pin = 8
